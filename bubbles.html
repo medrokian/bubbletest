@@ -71,15 +71,11 @@ class Bubble {
         this.speedX = (Math.random() - 0.5) * 8; // Increased horizontal speed
         this.speedY = (Math.random() - 0.5) * 8; // Increased vertical speed
         this.opacity = Math.random() * 0.5 + 0.5;
-        this.hue = Math.random() * 360; // Starting hue for color
-        this.hueChangeRate = 0.5; // Constant rate of hue change
     }
 
     update() {
         this.x += this.speedX + currentGravityDirection.x * 0.5;
         this.y += this.speedY + currentGravityDirection.y * 0.5;
-        this.hue += this.hueChangeRate; // Change hue over time
-        if (this.hue > 360) this.hue -= 360;
 
         // Boundary collision with phase distance
         const phaseRadius = this.radius; // Allow bubble to phase one radius into the wall
