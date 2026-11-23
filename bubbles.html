@@ -32,7 +32,10 @@ const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
-// Image configuration
+// GitHub image configuration
+const IMAGE_BASE_URL =
+    'https://cdn.jsdelivr.net/gh/medrokian/bubbletest@AHS-BASKETBALL/nums/';
+
 const imageNumbers = [
     ...Array.from({ length: 16 }, (_, i) => i),
     20, 30, 35
@@ -42,29 +45,6 @@ const images = [];
 
 let loadedImages = 0;
 const totalImages = imageNumbers.length;
-
-imageNumbers.forEach(number => {
-    const img = new Image();
-    img.src = `j${number}.png`;
-
-    img.onload = () => {
-        loadedImages++;
-
-        if (loadedImages === totalImages) {
-            init();
-            animate();
-        }
-    };
-
-    img.onerror = () => {
-        console.error(`Failed to load j${number}.png`);
-    };
-
-    images.push({
-        number,
-        image: img
-    });
-});
 
 // Object configuration
 const bubbles = [];
@@ -198,7 +178,6 @@ class Bubble {
         ctx.save();
 
         ctx.globalAlpha = this.opacity;
-
         ctx.translate(this.x, this.y);
 
         if (this.flipped) {
@@ -291,6 +270,39 @@ window.addEventListener('resize', () => {
             Math.max(bubble.y, 0),
             canvas.height
         );
+    });
+});
+
+// Load images from GitHub via jsDelivr
+imageNumbers.forEach(number => {
+    const img = new Image();
+
+    img.onload = () => {
+        loadedImages++;
+
+        if (loadedImages === totalImages) {
+            init();
+            animate();
+        }
+    };
+
+    img.onerror = () => {
+        console.error(`Failed to load j${number}.png`);
+
+        // Continue even if an image fails to load
+        loadedImages++;
+
+        if (loadedImages === totalImages) {
+            init();
+            animate();
+        }
+    };
+
+    img.src = `${IMAGE_BASE_URL}j${number}.png`;
+
+    images.push({
+        number,
+        image: img
     });
 });
 
