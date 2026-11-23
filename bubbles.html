@@ -5,15 +5,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bubbles Screensaver</title>
-
     <style>
-        body, html {
+        html, body {
             margin: 0;
             padding: 0;
             overflow: hidden;
             width: 100%;
             height: 100%;
-            background: #000000;
+            background: #000;
         }
 
         canvas {
@@ -29,12 +28,18 @@
 const canvas = document.getElementById('bubblesCanvas');
 const ctx = canvas.getContext('2d');
 
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
 
-// GitHub image configuration
+resizeCanvas();
+
 const IMAGE_BASE_URL =
     'https://cdn.jsdelivr.net/gh/medrokian/bubbletest@AHS-BASKETBALL/nums/';
+
+const RAW_BASE_URL =
+    'https://raw.githubusercontent.com/medrokian/bubbletest/AHS-BASKETBALL/nums/';
 
 const imageNumbers = [
     ...Array.from({ length: 16 }, (_, i) => i),
@@ -42,14 +47,32 @@ const imageNumbers = [
 ];
 
 const images = [];
-
-let loadedImages = 0;
-const totalImages = imageNumbers.length;
-
-// Object configuration
 const bubbles = [];
-const bubbleCount = imageNumbers.length * 2;
-const bubbleSize = 70;
+
+const ASPECT_WIDTH = 3378;
+const ASPECT_HEIGHT = 1887;
+const ASPECT_RATIO = ASPECT_HEIGHT / ASPECT_WIDTH;
+
+const bubbleSize = 220;
+const displayWidth = bubbleSize;
+const displayHeight = bubbleSize * ASPECT_RATIO;
+
+const MASK_SCALE = 2;
+const COLLISION_STEP = 2;
+
+const LAUNCH_INTERVAL = 400;
+
+const LAUNCH_SPEED_X_MIN = 1.5;
+const LAUNCH_SPEED_X_MAX = 3.5;
+const LAUNCH_SPEED_Y_MIN = 3;
+const LAUNCH_SPEED_Y_MAX = 5;
+
+const MAX_SPEED = 5;
+
+let launchSequence = false;
+let launchIndex = 0;
+let launchAccumulator = 0;
+let lastFrameTime = 0;
 
 const gravityDirections = [
     { x: 0, y: -1 },
@@ -66,118 +89,239 @@ let currentGravityDirection = { x: 0, y: 0 };
 let targetGravityDirection = { x: 0, y: -1 };
 let lastGravityDirectionIndex = -1;
 
+function calculateImageDimensions(image) {
+    const scale = Math.min(
+        displayWidth / image.naturalWidth,
+        displayHeight / image.naturalHeight
+    );
+
+    return {
+        width: image.naturalWidth * scale,
+        height: image.naturalHeight * scale
+    };
+}
+
+function createAlphaMask(image, imageDimensions) {
+    const width = Math.max(
+        1,
+        Math.round(displayWidth * MASK_SCALE)
+    );
+
+    const height = Math.max(
+        1,
+        Math.round(displayHeight * MASK_SCALE)
+    );
+
+    const offscreen = document.createElement('canvas');
+
+    offscreen.width = width;
+    offscreen.height = height;
+
+    const offCtx = offscreen.getContext('2d', {
+        willReadFrequently: true
+    });
+
+    const drawWidth = imageDimensions.width * MASK_SCALE;
+    const drawHeight = imageDimensions.height * MASK_SCALE;
+
+    const offsetX = (width - drawWidth) / 2;
+    const offsetY = (height - drawHeight) / 2;
+
+    offCtx.clearRect(0, 0, width, height);
+
+    offCtx.drawImage(
+        image,
+        offsetX,
+        offsetY,
+        drawWidth,
+        drawHeight
+    );
+
+    let pixels;
+
+    try {
+        pixels = offCtx.getImageData(
+            0,
+            0,
+            width,
+            height
+        ).data;
+    } catch (error) {
+        console.warn('Unable to read image alpha channel:', error);
+
+        return {
+            width,
+            height,
+            data: new Uint8Array(width * height).fill(1)
+        };
+    }
+
+    const mask = new Uint8Array(width * height);
+
+    for (let i = 0; i < mask.length; i++) {
+        mask[i] = pixels[i * 4 + 3] > 24 ? 1 : 0;
+    }
+
+    return {
+        width,
+        height,
+        data: mask
+    };
+}
+
 class Bubble {
     constructor(image, flipped = false) {
         this.image = image;
         this.flipped = flipped;
 
-        this.radius = bubbleSize;
+        this.width = displayWidth;
+        this.height = displayHeight;
 
-        this.x = Math.random() * Math.max(1, canvas.width - bubbleSize * 2) + bubbleSize;
-        this.y = Math.random() * Math.max(1, canvas.height - bubbleSize * 2) + bubbleSize;
+        this.halfWidth = this.width / 2;
+        this.halfHeight = this.height / 2;
 
-        this.speedX = (Math.random() - 0.5) * 8;
-        this.speedY = (Math.random() - 0.5) * 8;
+        this.boundRadius = Math.hypot(
+            this.halfWidth,
+            this.halfHeight
+        );
 
-        this.opacity = Math.random() * 0.5 + 0.5;
-        this.hue = Math.random() * 360;
+        this.imageDimensions = calculateImageDimensions(image);
+
+        this.imageHalfWidth = this.imageDimensions.width / 2;
+        this.imageHalfHeight = this.imageDimensions.height / 2;
+
+        this.mask = createAlphaMask(
+            image,
+            this.imageDimensions
+        );
+
+        this.speedX = (Math.random() - 0.5) * 7;
+        this.speedY = (Math.random() - 0.5) * 7;
+
+        if (Math.abs(this.speedX) < 1.5) {
+            this.speedX = this.speedX < 0 ? -1.5 : 1.5;
+        }
+
+        if (Math.abs(this.speedY) < 1.5) {
+            this.speedY = this.speedY < 0 ? -1.5 : 1.5;
+        }
+
+        this.opacity = 1;
+        this.launched = true;
+        this.spawnIgnored = new Set();
+
+        this.place();
     }
 
-    update() {
-        this.x += this.speedX + currentGravityDirection.x * 0.5;
-        this.y += this.speedY + currentGravityDirection.y * 0.5;
+    place() {
+        this.x = this.halfWidth +
+            Math.random() * Math.max(
+                1,
+                canvas.width - this.width
+            );
 
-        // Wall collisions
-        const phaseRadius = this.radius;
+        this.y = this.halfHeight +
+            Math.random() * Math.max(
+                1,
+                canvas.height - this.height
+            );
+    }
 
-        if (this.x - this.radius < -phaseRadius) {
-            this.x = -phaseRadius + this.radius;
-            this.speedX = -this.speedX;
+    limitSpeed() {
+        const speed = Math.hypot(this.speedX, this.speedY);
+
+        if (speed > MAX_SPEED) {
+            const scale = MAX_SPEED / speed;
+
+            this.speedX *= scale;
+            this.speedY *= scale;
         }
+    }
 
-        if (this.x + this.radius > canvas.width + phaseRadius) {
-            this.x = canvas.width + phaseRadius - this.radius;
-            this.speedX = -this.speedX;
-        }
+    launchFromCorner() {
+        this.x = this.halfWidth;
+        this.y = canvas.height - this.halfHeight;
 
-        if (this.y - this.radius < -phaseRadius) {
-            this.y = -phaseRadius + this.radius;
-            this.speedY = -this.speedY;
-        }
+        this.speedX =
+            LAUNCH_SPEED_X_MIN +
+            Math.random() * (
+                LAUNCH_SPEED_X_MAX - LAUNCH_SPEED_X_MIN
+            );
 
-        if (this.y + this.radius > canvas.height + phaseRadius) {
-            this.y = canvas.height + phaseRadius - this.radius;
-            this.speedY = -this.speedY;
-        }
+        this.speedY = -(
+            LAUNCH_SPEED_Y_MIN +
+            Math.random() * (
+                LAUNCH_SPEED_Y_MAX - LAUNCH_SPEED_Y_MIN
+            )
+        );
 
-        // Object collisions
-        for (let other of bubbles) {
-            if (this !== other && this.isCollidingWith(other)) {
-                this.resolveCollision(other);
+        this.speedX += (Math.random() - 0.5) * 0.5;
+
+        this.launched = true;
+        this.spawnIgnored.clear();
+
+        this.limitSpeed();
+
+        for (const other of bubbles) {
+            if (
+                other === this ||
+                !other.launched
+            ) {
+                continue;
+            }
+
+            if (isColliding(this, other)) {
+                this.spawnIgnored.add(other);
+                other.spawnIgnored.add(this);
             }
         }
     }
 
-    isCollidingWith(other) {
-        const dx = this.x - other.x;
-        const dy = this.y - other.y;
+    update() {
+        if (!this.launched) return;
 
-        return Math.hypot(dx, dy) < this.radius + other.radius;
-    }
+        this.x += this.speedX + currentGravityDirection.x * 0.5;
+        this.y += this.speedY + currentGravityDirection.y * 0.5;
 
-    resolveCollision(other) {
-        const dx = this.x - other.x;
-        const dy = this.y - other.y;
+        if (this.x - this.halfWidth < 0) {
+            this.x = this.halfWidth;
+            this.speedX = Math.abs(this.speedX);
+        }
 
-        const distance = Math.hypot(dx, dy);
+        if (this.x + this.halfWidth > canvas.width) {
+            this.x = canvas.width - this.halfWidth;
+            this.speedX = -Math.abs(this.speedX);
+        }
 
-        if (distance === 0) return;
+        if (this.y - this.halfHeight < 0) {
+            this.y = this.halfHeight;
+            this.speedY = Math.abs(this.speedY);
+        }
 
-        const nx = dx / distance;
-        const ny = dy / distance;
+        if (this.y + this.halfHeight > canvas.height) {
+            this.y = canvas.height - this.halfHeight;
+            this.speedY = -Math.abs(this.speedY);
+        }
 
-        const tx = -ny;
-        const ty = nx;
+        if (canvas.width < this.width) {
+            this.x = canvas.width / 2;
+            this.speedX = 0;
+        }
 
-        const dpTan1 = this.speedX * tx + this.speedY * ty;
-        const dpTan2 = other.speedX * tx + other.speedY * ty;
+        if (canvas.height < this.height) {
+            this.y = canvas.height / 2;
+            this.speedY = 0;
+        }
 
-        const dpNorm1 = this.speedX * nx + this.speedY * ny;
-        const dpNorm2 = other.speedX * nx + other.speedY * ny;
-
-        const m1 = (
-            dpNorm1 * (this.radius - other.radius) +
-            2 * other.radius * dpNorm2
-        ) / (this.radius + other.radius);
-
-        const m2 = (
-            dpNorm2 * (other.radius - this.radius) +
-            2 * this.radius * dpNorm1
-        ) / (this.radius + other.radius);
-
-        this.speedX = tx * dpTan1 + nx * m1;
-        this.speedY = ty * dpTan1 + ny * m1;
-
-        other.speedX = tx * dpTan2 + nx * m2;
-        other.speedY = ty * dpTan2 + ny * m2;
-
-        // Separate overlapping objects
-        const overlap = this.radius + other.radius - distance;
-
-        const shiftX = nx * overlap / 2;
-        const shiftY = ny * overlap / 2;
-
-        this.x += shiftX;
-        this.y += shiftY;
-
-        other.x -= shiftX;
-        other.y -= shiftY;
+        this.limitSpeed();
     }
 
     draw() {
+        if (!this.launched) return;
+
         ctx.save();
 
-        ctx.globalAlpha = this.opacity;
+        ctx.globalAlpha = 1;
         ctx.translate(this.x, this.y);
 
         if (this.flipped) {
@@ -186,127 +330,396 @@ class Bubble {
 
         ctx.drawImage(
             this.image,
-            -this.radius,
-            -this.radius,
-            this.radius * 2,
-            this.radius * 2
+            -this.imageHalfWidth,
+            -this.imageHalfHeight,
+            this.imageDimensions.width,
+            this.imageDimensions.height
         );
 
         ctx.restore();
     }
+
+    isOpaqueAt(worldX, worldY) {
+        const left = this.x - this.halfWidth;
+        const top = this.y - this.halfHeight;
+
+        let px = Math.floor(
+            (worldX - left) * MASK_SCALE
+        );
+
+        let py = Math.floor(
+            (worldY - top) * MASK_SCALE
+        );
+
+        if (
+            px < 0 || px >= this.mask.width ||
+            py < 0 || py >= this.mask.height
+        ) {
+            return false;
+        }
+
+        if (this.flipped) {
+            px = this.mask.width - 1 - px;
+            py = this.mask.height - 1 - py;
+        }
+
+        return this.mask.data[
+            py * this.mask.width + px
+        ] === 1;
+    }
 }
 
-// Initialize all objects
+function startLaunchSequence() {
+    if (bubbles.length === 0) return;
+
+    bubbles.forEach(bubble => {
+        bubble.launched = false;
+        bubble.spawnIgnored.clear();
+    });
+
+    launchSequence = true;
+    launchIndex = 0;
+    launchAccumulator = LAUNCH_INTERVAL;
+
+    console.log('Starting bubble launch sequence...');
+}
+
+window.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.repeat) {
+        event.preventDefault();
+        startLaunchSequence();
+    }
+});
+
+function isColliding(a, b) {
+    if (!a.launched || !b.launched) {
+        return false;
+    }
+
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+
+    if (
+        Math.hypot(dx, dy) >
+        a.boundRadius + b.boundRadius
+    ) {
+        return false;
+    }
+
+    const aLeft = a.x - a.halfWidth;
+    const aRight = a.x + a.halfWidth;
+    const aTop = a.y - a.halfHeight;
+    const aBottom = a.y + a.halfHeight;
+
+    const bLeft = b.x - b.halfWidth;
+    const bRight = b.x + b.halfWidth;
+    const bTop = b.y - b.halfHeight;
+    const bBottom = b.y + b.halfHeight;
+
+    const left = Math.max(aLeft, bLeft);
+    const right = Math.min(aRight, bRight);
+    const top = Math.max(aTop, bTop);
+    const bottom = Math.min(aBottom, bBottom);
+
+    if (left >= right || top >= bottom) {
+        return false;
+    }
+
+    for (
+        let y = top + COLLISION_STEP / 2;
+        y < bottom;
+        y += COLLISION_STEP
+    ) {
+        for (
+            let x = left + COLLISION_STEP / 2;
+            x < right;
+            x += COLLISION_STEP
+        ) {
+            if (
+                a.isOpaqueAt(x, y) &&
+                b.isOpaqueAt(x, y)
+            ) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+function resolveCollision(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+
+    const distance = Math.hypot(dx, dy);
+
+    if (distance === 0) return;
+
+    const nx = dx / distance;
+    const ny = dy / distance;
+
+    const relativeX = a.speedX - b.speedX;
+    const relativeY = a.speedY - b.speedY;
+
+    const velocityAlongNormal =
+        relativeX * nx +
+        relativeY * ny;
+
+    if (velocityAlongNormal > 0) {
+        a.speedX -= velocityAlongNormal * nx;
+        a.speedY -= velocityAlongNormal * ny;
+
+        b.speedX += velocityAlongNormal * nx;
+        b.speedY += velocityAlongNormal * ny;
+    }
+
+    const separation = 1.5;
+
+    a.x -= nx * separation;
+    a.y -= ny * separation;
+
+    b.x += nx * separation;
+    b.y += ny * separation;
+
+    a.limitSpeed();
+    b.limitSpeed();
+}
+
 function init() {
     bubbles.length = 0;
 
     images.forEach(entry => {
-        // First instance: normal
-        bubbles.push(new Bubble(entry.image, false));
+        bubbles.push(
+            new Bubble(entry.image, false)
+        );
 
-        // Second instance: rotated 180 degrees
-        bubbles.push(new Bubble(entry.image, true));
+        bubbles.push(
+            new Bubble(entry.image, true)
+        );
     });
+
+    for (let attempt = 0; attempt < 100; attempt++) {
+        for (let i = 0; i < bubbles.length; i++) {
+            for (let j = i + 1; j < bubbles.length; j++) {
+                const a = bubbles[i];
+                const b = bubbles[j];
+
+                const distance = Math.hypot(
+                    a.x - b.x,
+                    a.y - b.y
+                );
+
+                if (
+                    distance <
+                    a.boundRadius + b.boundRadius
+                ) {
+                    b.place();
+                }
+            }
+        }
+    }
+
+    console.log(
+        `Initialized ${bubbles.length} bubbles.`
+    );
 }
 
-// Animation loop
-function animate() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+function animate(timestamp = 0) {
+    const deltaTime = lastFrameTime
+        ? Math.min(timestamp - lastFrameTime, 50)
+        : 16.67;
+
+    lastFrameTime = timestamp;
+
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    );
+
+    if (launchSequence) {
+        launchAccumulator += deltaTime;
+
+        while (
+            launchAccumulator >= LAUNCH_INTERVAL &&
+            launchIndex < bubbles.length
+        ) {
+            bubbles[launchIndex].launchFromCorner();
+
+            launchIndex++;
+            launchAccumulator -= LAUNCH_INTERVAL;
+        }
+
+        if (launchIndex >= bubbles.length) {
+            launchSequence = false;
+            console.log('All images launched.');
+        }
+    }
+
+    bubbles.forEach(bubble => bubble.update());
+
+    for (let i = 0; i < bubbles.length; i++) {
+        for (let j = i + 1; j < bubbles.length; j++) {
+            const a = bubbles[i];
+            const b = bubbles[j];
+
+            if (
+                a.spawnIgnored.has(b) ||
+                b.spawnIgnored.has(a)
+            ) {
+                if (!isColliding(a, b)) {
+                    a.spawnIgnored.delete(b);
+                    b.spawnIgnored.delete(a);
+                }
+
+                continue;
+            }
+
+            if (isColliding(a, b)) {
+                resolveCollision(a, b);
+            }
+        }
+    }
 
     bubbles.forEach(bubble => {
-        bubble.update();
-        bubble.draw();
+        if (bubble.launched) {
+            bubble.limitSpeed();
+        }
     });
+
+    bubbles.forEach(bubble => bubble.draw());
 
     updateGravityDirection();
 
     requestAnimationFrame(animate);
 }
 
-// Gravity direction changes
 function changeGravityDirection() {
     let newIndex;
 
     do {
-        newIndex = Math.floor(Math.random() * gravityDirections.length);
-    } while (newIndex === lastGravityDirectionIndex);
+        newIndex = Math.floor(
+            Math.random() * gravityDirections.length
+        );
+    } while (
+        newIndex === lastGravityDirectionIndex
+    );
 
     targetGravityDirection = gravityDirections[newIndex];
     lastGravityDirectionIndex = newIndex;
 }
 
-// Smooth gravity transitions
 function updateGravityDirection() {
-    const step = 0.01;
+    const step = 0.015;
 
-    const dx = targetGravityDirection.x - currentGravityDirection.x;
-    const dy = targetGravityDirection.y - currentGravityDirection.y;
+    const dx =
+        targetGravityDirection.x -
+        currentGravityDirection.x;
+
+    const dy =
+        targetGravityDirection.y -
+        currentGravityDirection.y;
 
     if (Math.abs(dx) > step) {
-        currentGravityDirection.x += step * Math.sign(dx);
+        currentGravityDirection.x +=
+            step * Math.sign(dx);
     } else {
-        currentGravityDirection.x = targetGravityDirection.x;
+        currentGravityDirection.x =
+            targetGravityDirection.x;
     }
 
     if (Math.abs(dy) > step) {
-        currentGravityDirection.y += step * Math.sign(dy);
+        currentGravityDirection.y +=
+            step * Math.sign(dy);
     } else {
-        currentGravityDirection.y = targetGravityDirection.y;
+        currentGravityDirection.y =
+            targetGravityDirection.y;
     }
 }
 
-// Resize handling
+function loadImage(number) {
+    return new Promise(resolve => {
+        const img = new Image();
+
+        img.crossOrigin = 'anonymous';
+
+        let triedFallback = false;
+
+        img.onload = () => {
+            console.log(`Loaded j${number}.png`);
+
+            resolve({
+                number,
+                image: img
+            });
+        };
+
+        img.onerror = () => {
+            if (!triedFallback) {
+                triedFallback = true;
+
+                console.warn(
+                    `CDN failed for j${number}.png; trying GitHub Raw...`
+                );
+
+                img.src =
+                    `${RAW_BASE_URL}j${number}.png`;
+            } else {
+                console.error(
+                    `Could not load j${number}.png`
+                );
+
+                resolve(null);
+            }
+        };
+
+        img.src =
+            `${IMAGE_BASE_URL}j${number}.png`;
+    });
+}
+
+Promise.all(
+    imageNumbers.map(loadImage)
+).then(results => {
+    results.forEach(result => {
+        if (result) {
+            images.push(result);
+        }
+    });
+
+    console.log(
+        `Finished loading: ${images.length}/${imageNumbers.length} images`
+    );
+
+    init();
+    animate();
+});
+
 window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    resizeCanvas();
 
     bubbles.forEach(bubble => {
-        bubble.x = Math.min(
-            Math.max(bubble.x, 0),
-            canvas.width
-        );
+        if (canvas.width < bubble.width) {
+            bubble.x = canvas.width / 2;
+        } else {
+            bubble.x = Math.min(
+                Math.max(bubble.x, bubble.halfWidth),
+                canvas.width - bubble.halfWidth
+            );
+        }
 
-        bubble.y = Math.min(
-            Math.max(bubble.y, 0),
-            canvas.height
-        );
+        if (canvas.height < bubble.height) {
+            bubble.y = canvas.height / 2;
+        } else {
+            bubble.y = Math.min(
+                Math.max(bubble.y, bubble.halfHeight),
+                canvas.height - bubble.halfHeight
+            );
+        }
     });
 });
 
-// Load images from GitHub via jsDelivr
-imageNumbers.forEach(number => {
-    const img = new Image();
-
-    img.onload = () => {
-        loadedImages++;
-
-        if (loadedImages === totalImages) {
-            init();
-            animate();
-        }
-    };
-
-    img.onerror = () => {
-        console.error(`Failed to load j${number}.png`);
-
-        // Continue even if an image fails to load
-        loadedImages++;
-
-        if (loadedImages === totalImages) {
-            init();
-            animate();
-        }
-    };
-
-    img.src = `${IMAGE_BASE_URL}j${number}.png`;
-
-    images.push({
-        number,
-        image: img
-    });
-});
-
-// Start gravity changes
 setInterval(changeGravityDirection, 5000);
 
 </script>
